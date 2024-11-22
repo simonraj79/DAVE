@@ -326,3 +326,9 @@ bin/
 share/
 etc/
 pyvenv.cfg
+
+static/*.csv
+static/*.png
+static/*.zip
+static/*.jpg
+static/*.jpeg

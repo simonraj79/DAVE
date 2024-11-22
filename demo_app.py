@@ -1,14 +1,20 @@
 """
 demo_app.py
 """
+import os
 import streamlit as st
 from openai import OpenAI
 from utils import (
+    delete_files,
+    delete_thread,
     EventHandler,
     moderation_endpoint,
     is_nsfw,
     # is_not_question,
-    render_custom_css
+    render_custom_css,
+    render_download_files,
+    retrieve_messages_from_thread,
+    retrieve_assistant_created_files
     )
 
 # Initialise the OpenAI client, and retrieve the assistant
@@ -38,18 +44,18 @@ if "disabled" not in st.session_state:
     st.session_state.disabled = False
 
 # UI
-st.subheader("DAVE: Data Analysis & Visualisation Engine")
+st.subheader("🔮 DAVE: Data Analysis & Visualisation Engine")
 st.markdown("This demo uses a data.gov.sg dataset on HDB resale prices.", help="[Source](https://beta.data.gov.sg/collections/189/datasets/d_ebc5ab87086db484f88045b47411ebc5/view)")
 text_box = st.empty()
 qn_btn = st.empty()
 
-question = text_box.text_input("Ask a question", disabled=st.session_state.disabled)
+question = text_box.text_area("Ask a question", disabled=st.session_state.disabled)
 if qn_btn.button("Ask DAVE"):
 
     text_box.empty()
     qn_btn.empty()
 
-    if moderation_endpoint(question) or is_nsfw(question):
+    if moderation_endpoint(question):
         st.warning("Your question has been flagged. Refresh page to try again.")
         st.stop()
 
@@ -64,18 +70,16 @@ if qn_btn.button("Ask DAVE"):
         st.session_state.thread_id = thread.id
         print(st.session_state.thread_id)
 
-    # Attach the file to the thread
-    message = client.beta.threads.messages.create(
-        thread_id=st.session_state.thread_id,
-        role="user",
-        content="Here is a dataset. Analyse it",
-        file_ids=[st.secrets["FILE_ID"]]
-    )
+    # Update the thread to attach the file
+    client.beta.threads.update(
+            thread_id=st.session_state.thread_id,
+            tool_resources={"code_interpreter": {"file_ids": [st.secrets["FILE_ID"]]}}
+            )
 
     if "text_boxes" not in st.session_state:
         st.session_state.text_boxes = []
-
-    message = client.beta.threads.messages.create(
+        
+    client.beta.threads.messages.create(
         thread_id=st.session_state.thread_id,
         role="user",
         content=question
@@ -84,12 +88,25 @@ if qn_btn.button("Ask DAVE"):
     st.session_state.text_boxes.append(st.empty())
     st.session_state.text_boxes[-1].success(f"**> 🤔 User:** {question}")
 
-    with client.beta.threads.runs.create_and_stream(thread_id=st.session_state.thread_id,
-                                                    assistant_id=assistant.id,
-                                                    event_handler=EventHandler()
-    ) as stream:
+    with client.beta.threads.runs.stream(thread_id=st.session_state.thread_id,
+                                          assistant_id=assistant.id,
+                                          tool_choice={"type": "code_interpreter"},
+                                          event_handler=EventHandler(),
+                                          temperature=0) as stream:
         stream.until_done()
         st.toast("DAVE has finished analysing the data", icon="🕵️")
 
-        # Clean-up
-        # client.beta.threads.delete(st.session_state.thread_id)
+    # Prepare the files for download
+    with st.spinner("Preparing the files for download..."):
+        # Retrieve the messages by the Assistant from the thread
+        assistant_messages = retrieve_messages_from_thread(st.session_state.thread_id)
+        # For each assistant message, retrieve the file(s) created by the Assistant
+        st.session_state.assistant_created_file_ids = retrieve_assistant_created_files(assistant_messages)
+        # Download these files
+        st.session_state.download_files, st.session_state.download_file_names = render_download_files(st.session_state.assistant_created_file_ids)
+
+    # Clean-up
+    # Delete the file(s) created by the Assistant
+    delete_files(st.session_state.assistant_created_file_ids)
+    # Delete the thread
+    delete_thread(st.session_state.thread_id)
